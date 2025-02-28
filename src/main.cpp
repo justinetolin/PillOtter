@@ -1,28 +1,19 @@
 #include <LiquidCrystal_I2C.h>
 #include <RtcDS1302.h>
-#include <SD.h>
-#include <SPI.h>
 #include <SoftwareSerial.h>
 #include <ThreeWire.h>
 #include <Wire.h>
 
+// ! OBJECTS DEFINITIONS
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-ThreeWire myWire(7, 6, 8);
+ThreeWire myWire(7, 6, 8);  // DAT, CLK, RST
 RtcDS1302<ThreeWire> Rtc(myWire);
+SoftwareSerial BTSerial(3, 5);  // RX, TX
 
-const int chipSelect = 9;
-File myFile;
+// ! VARIABLES, DEFINITIONS AND STRUCTURES
+enum State { SETUP = 0, DISPENSE = 1 };
+State currentState = SETUP;
 
-SoftwareSerial BTSerial(3, 5);  // RX TX
-
-bool userExists = false;
-enum STATE { INACTIVE, ACTIVE };
-STATE currentState = INACTIVE;
-
-uint8_t hat[] = {0x00, 0x06, 0x09, 0x1f, 0x09, 0x00, 0x06, 0x00};
-lcd.createChar(0, hat);
-
-// Medicine structure
 struct Medicine {
   String name;
   int interval;
@@ -38,202 +29,181 @@ struct Medicine {
 
 Medicine med1, med2;
 
+// ! FUNCTIONS
+void receiveData(String &formData) {
+  unsigned long startTime = millis();
+  while (millis() - startTime < 300000) {  // 5-minute timeout
+    if (BTSerial.available()) {
+      formData = BTSerial.readStringUntil('\n');
+      formData.trim();
+      return;
+    }
+  }
+  formData = "";
+}
+
+int NewInstance() {
+  BTSerial.println("1");
+
+  Serial.println("Waiting for Med1 Name...");
+  receiveData(med1.name);
+
+  Serial.println("Waiting for Med1 Interval...");
+  String intervalStr;
+  receiveData(intervalStr);
+  med1.interval = intervalStr.toInt();
+
+  Serial.println("Waiting for Med1 Iterations...");
+  String iterationsStr;
+  receiveData(iterationsStr);
+  med1.iterations = iterationsStr.toInt();
+
+  Serial.println("Waiting for Med1 Base Hour...");
+  String baseHourStr;
+  receiveData(baseHourStr);
+  med1.baseHour = baseHourStr.toInt();
+
+  Serial.println("Waiting for Med1 Base Minute...");
+  String baseMinuteStr;
+  receiveData(baseMinuteStr);
+  med1.baseMinute = baseMinuteStr.toInt();
+
+  Serial.println("Waiting for Med1 Next Hour...");
+  String nextHourStr;
+  receiveData(nextHourStr);
+  med1.nextHour = nextHourStr.toInt();
+
+  Serial.println("Waiting for Med1 Next Minute...");
+  String nextMinuteStr;
+  receiveData(nextMinuteStr);
+  med1.nextMinute = nextMinuteStr.toInt();
+
+  Serial.println("Waiting for Med1 Active State...");
+  String activeStr;
+  receiveData(activeStr);
+  med1.active =
+      (activeStr == "1" || activeStr == "true");  // Convert to boolean
+
+  Serial.println("Waiting for Med1 Last Dispensed Hour...");
+  String lastDispensedHourStr;
+  receiveData(lastDispensedHourStr);
+  med1.lastDispensedHour = lastDispensedHourStr.toInt();
+
+  Serial.println("Waiting for Med1 Last Dispensed Minute...");
+  String lastDispensedMinuteStr;
+  receiveData(lastDispensedMinuteStr);
+  med1.lastDispensedMinute = lastDispensedMinuteStr.toInt();
+
+  // Repeat for Med2
+  Serial.println("Waiting for Med2 Name...");
+  receiveData(med2.name);
+
+  Serial.println("Waiting for Med2 Interval...");
+  receiveData(intervalStr);
+  med2.interval = intervalStr.toInt();
+
+  Serial.println("Waiting for Med2 Iterations...");
+  receiveData(iterationsStr);
+  med2.iterations = iterationsStr.toInt();
+
+  Serial.println("Waiting for Med2 Base Hour...");
+  receiveData(baseHourStr);
+  med2.baseHour = baseHourStr.toInt();
+
+  Serial.println("Waiting for Med2 Base Minute...");
+  receiveData(baseMinuteStr);
+  med2.baseMinute = baseMinuteStr.toInt();
+
+  Serial.println("Waiting for Med2 Next Hour...");
+  receiveData(nextHourStr);
+  med2.nextHour = nextHourStr.toInt();
+
+  Serial.println("Waiting for Med2 Next Minute...");
+  receiveData(nextMinuteStr);
+  med2.nextMinute = nextMinuteStr.toInt();
+
+  Serial.println("Waiting for Med2 Active State...");
+  receiveData(activeStr);
+  med2.active = (activeStr == "1" || activeStr == "true");
+
+  Serial.println("Waiting for Med2 Last Dispensed Hour...");
+  receiveData(lastDispensedHourStr);
+  med2.lastDispensedHour = lastDispensedHourStr.toInt();
+
+  Serial.println("Waiting for Med2 Last Dispensed Minute...");
+  receiveData(lastDispensedMinuteStr);
+  med2.lastDispensedMinute = lastDispensedMinuteStr.toInt();
+
+  Serial.println("Setup Successful");
+  currentState = DISPENSE;
+  return 1;
+}
+
 void setup() {
-  Serial.begin(9600);
-  BTSerial.begin(9600);
   Wire.begin();
   lcd.init();
   lcd.backlight();
   Rtc.Begin();
+  Serial.begin(9600);
+  BTSerial.begin(9600);
 
+  Rtc.SetDateTime(RtcDateTime(__DATE__, __TIME__));
   lcd.setCursor(0, 0);
-  lcd.print("Initializing...");
-  delay(1000);
-
-  if (!SD.begin(chipSelect)) {
-    Serial.println("SD Initialization Failed!");
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("SD Card Error!");
-    while (1);  // Stop the program
-  }
-
+  lcd.print("RTC DS1302 Ready");
   lcd.setCursor(0, 1);
-  lcd.print("SD=OK");
-  delay(1000);
+  lcd.print("Initializing...");
+  delay(2000);
 
-  // Check if USERINFO.txt exists on startup
-  if (!isAvailable()) {
-    Serial.println("Existing user found, loading data...");
-    lcd.clear() lcd.setCursor(0, 0);
-    lcd.print("User found");
-    lcd.setCursor(0, 1);
-    lcd.print("Loading...");
-    loadUser();
-    currentState = ACTIVE;
-  } else {
-    Serial.println("No user data found. Waiting for new user...");
-    currentState = INACTIVE;
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("   PillOtter");
-    lcd.write(byte(0));
-    lcd.setCursor(1, 1);
-    lcd.print("Waiting for setup");
-  }
+  // LOAD USER FROM SD HERE
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("   PillOtter");
+  lcd.setCursor(0, 1);
+  lcd.print("Connect 2 setup");
 }
 
 void loop() {
   switch (currentState) {
-    case INACTIVE:
+    case SETUP:
+      Serial.println("State: SETUP");
 
-    case ACTIVE:
-  }
-  delay(500);
-}
+      if (BTSerial.available()) {
+        String receivedData = BTSerial.readStringUntil('\n');
+        receivedData.trim();
+        Serial.println("RECEIVED: ");
+        Serial.println(receivedData);
 
-// ----------------------
-bool availabilityCheck() {
-  if (!SD.exists("USERINFO.txt")) {
-    availability = true;
-  } else {
-    availability = false;
-  }
-  return availability;
-}
+        if (receivedData == "check") {
+          BTSerial.println("1");
+        } else if (receivedData == "NewInstance") {
+          int confirmation = NewInstance();
+          BTSerial.println(confirmation);
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("Setup Successful");
 
-void receiveData() {
-  unsigned long startTime = millis();
-  while (millis() - startTime < 300000) {  // 5-minute timeout
-    if (Serial1.available()) {
-      return Serial1.readStringUntil('\n');
-    }
-  }
-  return "";  // Default to empty string if timeout occurs
-}
-
-void newInstance() {
-  BTSerial.println("1");
-  Serial.println("Starting new user setup...");
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Receiving Data...");
-
-  // Receive medicine 1 data
-  med1.name = receiveData();
-  med1.interval = receiveData().toInt();
-  med1.iterations = receiveData().toInt();
-  med1.baseHour = receiveData().toInt();
-  med1.baseMinute = receiveData().toInt();
-  med1.nextHour = receiveData().toInt();
-  med1.nextMinute = receiveData().toInt();
-  med1.active = true;
-
-  // Receive medicine 2 flag
-  int med2Flag = receiveData().toInt();
-
-  if (med2Flag == 1) {
-    med2.name = receiveData();
-    med2.interval = receiveData().toInt();
-    med2.iterations = receiveData().toInt();
-    med2.baseHour = receiveData().toInt();
-    med2.baseMinute = receiveData().toInt();
-    med2.nextHour = receiveData().toInt();
-    med2.nextMinute = receiveData().toInt();
-    med2.active = true;
-  } else {
-    med2.active = false;
-  }
-
-  // Save data to SD card
-  saveUser();
-
-  // Set state to ACTIVE
-  currentState = ACTIVE;
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("User Registered");
-  lcd.setCursor(0, 1);
-  lcd.print("System Ready!");
-  Serial.println("New user setup complete.");
-}
-
-// ----------------------
-// saveUser Function
-// ----------------------
-void saveUser() {
-  File dataFile = SD.open("USERINFO.txt", FILE_WRITE);
-  if (dataFile) {
-    dataFile.print(med1.name + "," + String(med1.interval) + "," +
-                   String(med1.iterations) + "," + String(med1.baseHour) + "," +
-                   String(med1.baseMinute) + "," + String(med1.nextHour) + "," +
-                   String(med1.nextMinute) + ",");
-
-    if (med2.active) {
-      dataFile.print(med2.name + "," + String(med2.interval) + "," +
-                     String(med2.iterations) + "," + String(med2.baseHour) +
-                     "," + String(med2.baseMinute) + "," +
-                     String(med2.nextHour) + "," + String(med2.nextMinute));
-    }
-
-    dataFile.close();
-    Serial.println("User data saved successfully.");
-  } else {
-    Serial.println("Error saving user data!");
-  }
-}
-
-// ----------------------
-// loadUser Function
-// ----------------------
-void loadUser() {
-  File dataFile = SD.open("USERINFO.txt");
-  if (dataFile) {
-    String fileContent = dataFile.readString();
-    dataFile.close();
-
-    // Parsing user data
-    int start = 0, index = 0;
-    String values[14];
-
-    for (int i = 0; i < fileContent.length(); i++) {
-      if (fileContent[i] == ',' || i == fileContent.length() - 1) {
-        values[index++] = fileContent.substring(start, i + 1);
-        start = i + 1;
-        if (index >= 14) break;
+        } else if (receivedData == "Clear") {
+          BTSerial.println("CLEAR NA CLEAR");
+          Serial.println("USER CLEARED");
+          currentState = SETUP;
+        }
       }
-    }
+      break;
 
-    med1.name = values[0];
-    med1.interval = values[1].toInt();
-    med1.iterations = values[2].toInt();
-    med1.baseHour = values[3].toInt();
-    med1.baseMinute = values[4].toInt();
-    med1.nextHour = values[5].toInt();
-    med1.nextMinute = values[6].toInt();
-    med1.active = true;
+    case DISPENSE:
+      // Serial.println("State: DISPENSE");
+      // Serial.println("What data do you need?");
+      if (Serial.available()) {
+        String input = Serial.readStringUntil('\n');
+        input.trim();
+        if (input == "med1") {
+          Serial.println(med1.name);
+        } else if (input == "med2") {
+          Serial.println(med2.name);
+        }
+      }
 
-    if (index > 7) {
-      med2.name = values[7];
-      med2.interval = values[8].toInt();
-      med2.iterations = values[9].toInt();
-      med2.baseHour = values[10].toInt();
-      med2.baseMinute = values[11].toInt();
-      med2.nextHour = values[12].toInt();
-      med2.nextMinute = values[13].toInt();
-      med2.active = true;
-    }
-
-    Serial.println("User data loaded successfully.");
+      break;
   }
-}
-
-// ----------------------
-// receiveData Function
-// ----------------------
-String receiveData() {
-  while (!BTSerial.available());
-  String received = BTSerial.readStringUntil('\n');
-  received.trim();
-  return received;
 }
