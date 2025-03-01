@@ -30,109 +30,89 @@ struct Medicine {
 Medicine med1, med2;
 
 // ! FUNCTIONS
-void receiveData(String &formData) {
+String receiveData(bool expectInt = false) {
   unsigned long startTime = millis();
   while (millis() - startTime < 300000) {  // 5-minute timeout
     if (BTSerial.available()) {
-      formData = BTSerial.readStringUntil('\n');
-      formData.trim();
-      return;
+      String buffer = BTSerial.readStringUntil('\n');
+      buffer.trim();
+
+      if (expectInt) {
+        return String(buffer.toInt());  // ✅ Convert `int` back to `String`
+      } else {
+        return buffer;  // ✅ Return the received string
+      }
     }
   }
-  formData = "";
+  return "";  // Return empty string if timeout
 }
 
 int NewInstance() {
   BTSerial.println("1");
 
   Serial.println("Waiting for Med1 Name...");
-  receiveData(med1.name);
+  med1.name = receiveData();
 
   Serial.println("Waiting for Med1 Interval...");
-  String intervalStr;
-  receiveData(intervalStr);
-  med1.interval = intervalStr.toInt();
+  med1.interval =
+      receiveData(true).toInt();  // ✅ Convert received String to int
 
   Serial.println("Waiting for Med1 Iterations...");
-  String iterationsStr;
-  receiveData(iterationsStr);
-  med1.iterations = iterationsStr.toInt();
+  med1.iterations = receiveData(true).toInt();
 
   Serial.println("Waiting for Med1 Base Hour...");
-  String baseHourStr;
-  receiveData(baseHourStr);
-  med1.baseHour = baseHourStr.toInt();
+  med1.baseHour = receiveData(true).toInt();
 
   Serial.println("Waiting for Med1 Base Minute...");
-  String baseMinuteStr;
-  receiveData(baseMinuteStr);
-  med1.baseMinute = baseMinuteStr.toInt();
+  med1.baseMinute = receiveData(true).toInt();
 
   Serial.println("Waiting for Med1 Next Hour...");
-  String nextHourStr;
-  receiveData(nextHourStr);
-  med1.nextHour = nextHourStr.toInt();
+  med1.nextHour = receiveData(true).toInt();
 
   Serial.println("Waiting for Med1 Next Minute...");
-  String nextMinuteStr;
-  receiveData(nextMinuteStr);
-  med1.nextMinute = nextMinuteStr.toInt();
+  med1.nextMinute = receiveData(true).toInt();
 
   Serial.println("Waiting for Med1 Active State...");
-  String activeStr;
-  receiveData(activeStr);
-  med1.active =
-      (activeStr == "1" || activeStr == "true");  // Convert to boolean
+  med1.active = (receiveData() == "1");
 
   Serial.println("Waiting for Med1 Last Dispensed Hour...");
-  String lastDispensedHourStr;
-  receiveData(lastDispensedHourStr);
-  med1.lastDispensedHour = lastDispensedHourStr.toInt();
+  med1.lastDispensedHour = receiveData(true).toInt();
 
   Serial.println("Waiting for Med1 Last Dispensed Minute...");
-  String lastDispensedMinuteStr;
-  receiveData(lastDispensedMinuteStr);
-  med1.lastDispensedMinute = lastDispensedMinuteStr.toInt();
+  med1.lastDispensedMinute = receiveData(true).toInt();
 
-  // Repeat for Med2
-  Serial.println("Waiting for Med2 Name...");
-  receiveData(med2.name);
-
-  Serial.println("Waiting for Med2 Interval...");
-  receiveData(intervalStr);
-  med2.interval = intervalStr.toInt();
-
-  Serial.println("Waiting for Med2 Iterations...");
-  receiveData(iterationsStr);
-  med2.iterations = iterationsStr.toInt();
-
-  Serial.println("Waiting for Med2 Base Hour...");
-  receiveData(baseHourStr);
-  med2.baseHour = baseHourStr.toInt();
-
-  Serial.println("Waiting for Med2 Base Minute...");
-  receiveData(baseMinuteStr);
-  med2.baseMinute = baseMinuteStr.toInt();
-
-  Serial.println("Waiting for Med2 Next Hour...");
-  receiveData(nextHourStr);
-  med2.nextHour = nextHourStr.toInt();
-
-  Serial.println("Waiting for Med2 Next Minute...");
-  receiveData(nextMinuteStr);
-  med2.nextMinute = nextMinuteStr.toInt();
-
+  // Check if Med2 is active
   Serial.println("Waiting for Med2 Active State...");
-  receiveData(activeStr);
-  med2.active = (activeStr == "1" || activeStr == "true");
+  med2.active = (receiveData() == "1");
 
-  Serial.println("Waiting for Med2 Last Dispensed Hour...");
-  receiveData(lastDispensedHourStr);
-  med2.lastDispensedHour = lastDispensedHourStr.toInt();
+  if (med2.active) {
+    Serial.println("Waiting for Med2 Name...");
+    med2.name = receiveData();
 
-  Serial.println("Waiting for Med2 Last Dispensed Minute...");
-  receiveData(lastDispensedMinuteStr);
-  med2.lastDispensedMinute = lastDispensedMinuteStr.toInt();
+    Serial.println("Waiting for Med2 Interval...");
+    med2.interval = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Iterations...");
+    med2.iterations = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Base Hour...");
+    med2.baseHour = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Base Minute...");
+    med2.baseMinute = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Next Hour...");
+    med2.nextHour = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Next Minute...");
+    med2.nextMinute = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Last Dispensed Hour...");
+    med2.lastDispensedHour = receiveData(true).toInt();
+
+    Serial.println("Waiting for Med2 Last Dispensed Minute...");
+    med2.lastDispensedMinute = receiveData(true).toInt();
+  }
 
   Serial.println("Setup Successful");
   currentState = DISPENSE;
