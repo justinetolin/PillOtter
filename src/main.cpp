@@ -30,6 +30,7 @@ struct Medicine {
 };
 
 Medicine med1, med2;
+String MedContact = "+639915176440";
 
 // ! FUNCTIONS
 String receiveData(bool expectInt = false) {
@@ -51,6 +52,9 @@ String receiveData(bool expectInt = false) {
 
 int NewInstance() {
   Serial1.println("1");
+
+  Serial.println("Waiting for Med Contact...");
+  MedContact = receiveData();
 
   Serial.println("Waiting for Med1 Name...");
   med1.name = receiveData();
@@ -121,6 +125,199 @@ int NewInstance() {
   return 1;
 }
 
+void saveSched() {
+  File schedF = SD.open("USERINFO.txt", FILE_WRITE);
+  if (schedF) {
+    schedF.print(MedContact);
+    if (med1.active) {
+      schedF.print(med1.name);
+      schedF.print(",");
+      schedF.print(med1.interval);
+      schedF.print(",");
+      schedF.print(med1.iterations);
+      schedF.print(",");
+      schedF.print(med1.baseHour);
+      schedF.print(",");
+      schedF.print(med1.baseMinute);
+      schedF.print(",");
+      schedF.print(med1.nextHour);
+      schedF.print(",");
+      schedF.print(med1.nextMinute);
+      schedF.print(",");
+      schedF.print(med1.active);
+      schedF.print(",");
+      schedF.print(med1.lastDispensedHour);
+      schedF.print(",");
+      schedF.print(med1.lastDispensedMinute);
+      schedF.print(",");
+      schedF.print(med2.active);
+    }
+
+    if (med2.active) {
+      schedF.print(",");
+      schedF.print(med2.name);
+      schedF.print(",");
+      schedF.print(med2.interval);
+      schedF.print(",");
+      schedF.print(med2.iterations);
+      schedF.print(",");
+      schedF.print(med2.baseHour);
+      schedF.print(",");
+      schedF.print(med2.baseMinute);
+      schedF.print(",");
+      schedF.print(med2.nextHour);
+      schedF.print(",");
+      schedF.print(med2.nextMinute);
+      schedF.print(",");
+      schedF.print(med2.lastDispensedHour);
+      schedF.print(",");
+      schedF.print(med2.lastDispensedMinute);
+    }
+    schedF.println();
+    schedF.close();
+    Serial.println("Schedule saved to SD.");
+  }
+}
+
+void loadUser() {
+  File schedF = SD.open("USERINFO.txt", FILE_READ);
+
+  if (!schedF) {
+    Serial.println("Failed to open USERINFO.txt for reading.");
+    return;
+  }
+
+  Serial.println("Loading user data...");
+
+  String line = schedF.readStringUntil('\n');  // Read the entire line
+  line.trim();  // Remove any trailing spaces or newline characters
+
+  if (line.length() == 0) {
+    Serial.println("USERINFO.txt is empty.");
+    schedF.close();
+    return;
+  }
+
+  // Tokenize the CSV string
+  String tokens[21];
+  int index = 0;
+  int lastIndex = 0;
+
+  for (int i = 0; i < line.length(); i++) {
+    if (line[i] == ',' || i == line.length() - 1) {
+      if (i == line.length() - 1)
+        i++;  // Include last character if no comma at end
+      tokens[index++] = line.substring(lastIndex, i);
+      lastIndex = i + 1;
+    }
+  }
+
+  if (index < 11) {  // Ensure at least Med1 + Med2 active flag is available
+    Serial.println("Corrupt or incomplete data in USERINFO.txt.");
+    schedF.close();
+    return;
+  }
+
+  // Parse Med1
+  MedContact = tokens[0];
+  med1.name = tokens[1];
+  med1.interval = tokens[2].toInt();
+  med1.iterations = tokens[3].toInt();
+  med1.baseHour = tokens[4].toInt();
+  med1.baseMinute = tokens[5].toInt();
+  med1.nextHour = tokens[6].toInt();
+  med1.nextMinute = tokens[7].toInt();
+  med1.active = (tokens[8] == "1");  // Convert to bool
+  med1.lastDispensedHour = tokens[9].toInt();
+  med1.lastDispensedMinute = tokens[10].toInt();
+
+  // Parse Med2 Active State
+  med2.active = (tokens[11] == "1");
+
+  // If Med2 is active, parse its data
+  if (med2.active && index >= 19) {  // Ensure Med2 fields exist
+    med2.name = tokens[12];
+    med2.interval = tokens[13].toInt();
+    med2.iterations = tokens[14].toInt();
+    med2.baseHour = tokens[15].toInt();
+    med2.baseMinute = tokens[16].toInt();
+    med2.nextHour = tokens[17].toInt();
+    med2.nextMinute = tokens[18].toInt();
+    med2.lastDispensedHour = tokens[19].toInt();
+    med2.lastDispensedMinute = tokens[20].toInt();
+  }
+
+  schedF.close();
+  Serial.println("User data loaded successfully.");
+}
+
+void clearUser() {
+  // Open USERINFO.txt to read saved data
+  File userFile = SD.open("USERINFO.txt", FILE_READ);
+  if (userFile) {
+    Serial.println("Saving current data to USER_LOG.txt...");
+
+    // Open USER_LOG.txt in append mode
+    File logFile = SD.open("USER_LOG.txt", FILE_WRITE);
+    if (logFile) {
+      String userData = userFile.readStringUntil('\n');  // Read full line
+      logFile.println(userData);  // Save data to log file
+      logFile.close();
+      Serial.println("User data saved to log.");
+    } else {
+      Serial.println("ERROR: Failed to open USER_LOG.txt.");
+    }
+
+    userFile.close();
+  } else {
+    Serial.println("No existing user data found.");
+  }
+
+  // Delete USERINFO.txt to clear saved schedule
+  if (SD.exists("USERINFO.txt")) {
+    SD.remove("USERINFO.txt");
+    Serial.println("USERINFO.txt deleted.");
+  } else {
+    Serial.println("USERINFO.txt does not exist.");
+  }
+
+  Serial.println("Restarting Arduino...");
+  delay(1000);
+  asm volatile("jmp 0");  // Soft reset Arduino
+}
+
+void sendAlert(char *messageType) {
+  String message = "";
+
+  if (messageType == "M") {
+    message =
+        "ALERT: Your patient has missed their scheduled dose. Please check on "
+        "them.";
+  } else if (messageType == "1") {
+    message = "REFILL ALERT: The dispenser is low on " + med1.name +
+              ". Please refill it.";
+  } else if (messageType == "2") {
+    message = "REFILL ALERT: The dispenser is low on " + med2.name +
+              ". Please refill it.";
+  } else {
+    Serial.println("Invalid message type.");
+    return;
+  }
+
+  Serial.println("Sending SMS Alert...");
+  Serial2.println("AT+CMGF=1");  // Set SMS mode to text
+  delay(1000);
+  Serial2.print("AT+CMGS=\"");
+  Serial2.print(MedContact);
+  Serial2.println("\"");
+  delay(1000);
+  Serial2.println(message);
+  delay(500);
+  Serial2.write(26);  // Send Ctrl+Z to indicate message end
+
+  Serial.println("Alert sent successfully.");
+}
+
 void setup() {
   Wire.begin();
   lcd.init();
@@ -128,6 +325,7 @@ void setup() {
   Rtc.Begin();
   Serial.begin(9600);
   Serial1.begin(9600);
+  Serial2.begin(9600);
 
   Rtc.SetDateTime(RtcDateTime(__DATE__, __TIME__));
   lcd.setCursor(0, 1);
@@ -238,163 +436,4 @@ void loop() {
 
       break;
   }
-}
-
-void saveSched() {
-  File schedF = SD.open("USERINFO.txt", FILE_WRITE);
-  if (schedF) {
-    if (med1.active) {
-      schedF.print(med1.name);
-      schedF.print(",");
-      schedF.print(med1.interval);
-      schedF.print(",");
-      schedF.print(med1.iterations);
-      schedF.print(",");
-      schedF.print(med1.baseHour);
-      schedF.print(",");
-      schedF.print(med1.baseMinute);
-      schedF.print(",");
-      schedF.print(med1.nextHour);
-      schedF.print(",");
-      schedF.print(med1.nextMinute);
-      schedF.print(",");
-      schedF.print(med1.active);
-      schedF.print(",");
-      schedF.print(med1.lastDispensedHour);
-      schedF.print(",");
-      schedF.print(med1.lastDispensedMinute);
-      schedF.print(",");
-      schedF.print(med2.active);
-    }
-
-    if (med2.active) {
-      schedF.print(",");
-      schedF.print(med2.name);
-      schedF.print(",");
-      schedF.print(med2.interval);
-      schedF.print(",");
-      schedF.print(med2.iterations);
-      schedF.print(",");
-      schedF.print(med2.baseHour);
-      schedF.print(",");
-      schedF.print(med2.baseMinute);
-      schedF.print(",");
-      schedF.print(med2.nextHour);
-      schedF.print(",");
-      schedF.print(med2.nextMinute);
-      schedF.print(",");
-      schedF.print(med2.lastDispensedHour);
-      schedF.print(",");
-      schedF.print(med2.lastDispensedMinute);
-    }
-    schedF.println();
-    schedF.close();
-    Serial.println("Schedule saved to SD.");
-  }
-}
-
-void loadUser() {
-  File schedF = SD.open("USERINFO.txt", FILE_READ);
-
-  if (!schedF) {
-    Serial.println("Failed to open USERINFO.txt for reading.");
-    return;
-  }
-
-  Serial.println("Loading user data...");
-
-  String line = schedF.readStringUntil('\n');  // Read the entire line
-  line.trim();  // Remove any trailing spaces or newline characters
-
-  if (line.length() == 0) {
-    Serial.println("USERINFO.txt is empty.");
-    schedF.close();
-    return;
-  }
-
-  // Tokenize the CSV string
-  String tokens[20];
-  int index = 0;
-  int lastIndex = 0;
-
-  for (int i = 0; i < line.length(); i++) {
-    if (line[i] == ',' || i == line.length() - 1) {
-      if (i == line.length() - 1)
-        i++;  // Include last character if no comma at end
-      tokens[index++] = line.substring(lastIndex, i);
-      lastIndex = i + 1;
-    }
-  }
-
-  if (index < 11) {  // Ensure at least Med1 + Med2 active flag is available
-    Serial.println("Corrupt or incomplete data in USERINFO.txt.");
-    schedF.close();
-    return;
-  }
-
-  // Parse Med1
-  med1.name = tokens[0];
-  med1.interval = tokens[1].toInt();
-  med1.iterations = tokens[2].toInt();
-  med1.baseHour = tokens[3].toInt();
-  med1.baseMinute = tokens[4].toInt();
-  med1.nextHour = tokens[5].toInt();
-  med1.nextMinute = tokens[6].toInt();
-  med1.active = (tokens[7] == "1");  // Convert to bool
-  med1.lastDispensedHour = tokens[8].toInt();
-  med1.lastDispensedMinute = tokens[9].toInt();
-
-  // Parse Med2 Active State
-  med2.active = (tokens[10] == "1");
-
-  // If Med2 is active, parse its data
-  if (med2.active && index >= 19) {  // Ensure Med2 fields exist
-    med2.name = tokens[11];
-    med2.interval = tokens[12].toInt();
-    med2.iterations = tokens[13].toInt();
-    med2.baseHour = tokens[14].toInt();
-    med2.baseMinute = tokens[15].toInt();
-    med2.nextHour = tokens[16].toInt();
-    med2.nextMinute = tokens[17].toInt();
-    med2.lastDispensedHour = tokens[18].toInt();
-    med2.lastDispensedMinute = tokens[19].toInt();
-  }
-
-  schedF.close();
-  Serial.println("User data loaded successfully.");
-}
-
-void clearUser() {
-  // Open USERINFO.txt to read saved data
-  File userFile = SD.open("USERINFO.txt", FILE_READ);
-  if (userFile) {
-    Serial.println("Saving current data to USER_LOG.txt...");
-
-    // Open USER_LOG.txt in append mode
-    File logFile = SD.open("USER_LOG.txt", FILE_WRITE);
-    if (logFile) {
-      String userData = userFile.readStringUntil('\n');  // Read full line
-      logFile.println(userData);  // Save data to log file
-      logFile.close();
-      Serial.println("User data saved to log.");
-    } else {
-      Serial.println("ERROR: Failed to open USER_LOG.txt.");
-    }
-
-    userFile.close();
-  } else {
-    Serial.println("No existing user data found.");
-  }
-
-  // Delete USERINFO.txt to clear saved schedule
-  if (SD.exists("USERINFO.txt")) {
-    SD.remove("USERINFO.txt");
-    Serial.println("USERINFO.txt deleted.");
-  } else {
-    Serial.println("USERINFO.txt does not exist.");
-  }
-
-  Serial.println("Restarting Arduino...");
-  delay(1000);
-  asm volatile("jmp 0");  // Soft reset Arduino
 }
