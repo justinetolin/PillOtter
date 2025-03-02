@@ -2,45 +2,60 @@
 #include <RtcDS1302.h>
 #include <SD.h>
 #include <SPI.h>
+#include <Servo.h>
 #include <SoftwareSerial.h>
 #include <ThreeWire.h>
 #include <Wire.h>
 
 // ! OBJECTS DEFINITIONS
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-ThreeWire myWire(7, 6, 8);  // DAT, CLK, RST
+ThreeWire myWire(7, 6, 8);  // DAT, CLK, RST for RTC DS1302
 RtcDS1302<ThreeWire> Rtc(myWire);
+
+// Two servo motors for dispensing pills
+Servo servo1;  // for med1
+Servo servo2;  // for med2
+
+// Define additional hardware pins
+#define CSpin 53       // SD card chip select
+#define IR_PIN 22      // IR sensor input pin (reads LOW when pill is taken)
+#define BUZZER_PIN A7  // Buzzer output pin
+#define LED_PIN A8
 
 // ! VARIABLES, DEFINITIONS AND STRUCTURES
 enum State { SETUP = 0, DISPENSE = 1 };
 State currentState = SETUP;
-#define CSpin 53
 
 struct Medicine {
   String name;
-  int interval;
-  int iterations;
-  int baseHour;
-  int baseMinute;
-  int nextHour;
-  int nextMinute;
-  bool active;
+  int interval;    // in hours
+  int iterations;  // doses per day (not used in this snippet)
+  int baseHour;    // scheduled base hour (from app)
+  int baseMinute;  // scheduled base minute
+  int nextHour;    // next dispensing hour
+  int nextMinute;  // next dispensing minute
+  bool active;     // true if medicine is active
   int lastDispensedHour;
   int lastDispensedMinute;
+  bool dispensed;  // flag to indicate if the medicine has been dispensed
 };
 
 Medicine med1, med2;
-String MedContact = "+639915176440";
+String MedContact = "+639915176440";  // For GSM alerts
 
 // ! FUNCTIONS
+
+// Receive data from Serial1 (Bluetooth/GSM) with optional integer expectation.
+// This function returns a String (even when expecting a number, which you then
+// convert).
 String receiveData(bool expectInt = false) {
   unsigned long startTime = millis();
   while (millis() - startTime < 300000) {  // 5-minute timeout
     if (Serial1.available()) {
       String buffer = Serial1.readStringUntil('\n');
       buffer.trim();
-
       if (expectInt) {
+        // Return the integer value as a String
         return String(buffer.toInt());
       } else {
         return buffer;
@@ -50,6 +65,149 @@ String receiveData(bool expectInt = false) {
   return "";  // Return empty string if timeout
 }
 
+// ! HELPER FUNCTION: Format DateTime into "YYYY-MM-DD HH:MM"
+String formatDateTime(const RtcDateTime &dt) {
+  char buf[18];
+  sprintf(buf, "%04d-%02d-%02d %02d:%02d", dt.Year(), dt.Month(), dt.Day(),
+          dt.Hour(), dt.Minute());
+  return String(buf);
+}
+
+// ! LOG SCHED FUNCTION: Logs scheduled and actual intake times
+void logSched(Medicine &med, const RtcDateTime &scheduled,
+              const RtcDateTime &actual) {
+  String schedStr = formatDateTime(scheduled);
+  String actualStr = formatDateTime(actual);
+  File logFile = SD.open("schedlog.txt", FILE_WRITE);
+  if (logFile) {
+    logFile.println(schedStr + "," + actualStr);
+    logFile.close();
+    Serial.println("Logged schedule: " + schedStr + " , " + actualStr);
+  } else {
+    Serial.println("Error opening schedlog.txt for writing.");
+  }
+}
+
+// ! Functions for buzzer control
+void beepBuzzer(int times, int duration) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(duration);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(duration);
+  }
+}
+
+void continuousBuzzer() { digitalWrite(BUZZER_PIN, HIGH); }
+
+void stopBuzzer() { digitalWrite(BUZZER_PIN, LOW); }
+
+// ! Dispense Pill Function using servo motor
+void dispensePill(int compartment) {
+  if (compartment == 1) {
+    servo1.write(90);
+    delay(3000);
+    servo1.write(0);
+  } else if (compartment == 2) {
+    servo2.write(90);
+    delay(3000);
+    servo2.write(0);
+  }
+}
+
+// ! Update Schedule: Adds the interval (in hours) to the actual dispensing
+// time.
+void updateSchedule(Medicine &med, int actualHour, int actualMinute) {
+  int actualMins = actualHour * 60 + actualMinute;
+  int intervalMins = med.interval * 60;
+  int newTime = actualMins + intervalMins;
+  med.nextHour = (newTime / 60) % 24;
+  med.nextMinute = newTime % 60;
+  med.lastDispensedHour = actualHour;
+  med.lastDispensedMinute = actualMinute;
+  med.dispensed = false;  // Reset flag for the new scheduled event
+  Serial.print("New schedule for ");
+  Serial.print(med.name);
+  Serial.print(": ");
+  Serial.print(med.nextHour);
+  Serial.print(":");
+  Serial.println(med.nextMinute);
+}
+
+// ! Check and Dispense: Called every 10 seconds in DISPENSE state.
+void checkAndDispense() {
+  // Get current time from RTC
+  RtcDateTime now = Rtc.GetDateTime();
+  int currentHour = now.Hour();
+  int currentMinute = now.Minute();
+
+  // Process Med1 if active, scheduled time matches, and not yet dispensed
+  if (med1.active && currentHour == med1.nextHour &&
+      currentMinute == med1.nextMinute && !med1.dispensed) {
+    Serial.println("Dispensing Med1...");
+    beepBuzzer(2, 200);
+    digitalWrite(LED_PIN, HIGH);
+    dispensePill(1);
+    beepBuzzer(2, 200);
+    continuousBuzzer();
+    // Keep buzzing until IR sensor indicates pill taken (IR sensor reads LOW)
+    while (digitalRead(IR_PIN) != LOW) {
+      RtcDateTime now = Rtc.GetDateTime();
+      int currentHour = now.Hour();
+      int currentMinute = now.Minute();
+      int currentSecond = now.Second();
+      Serial.print("Current time: ");
+      Serial.print(currentHour);
+      Serial.print(":");
+      Serial.println(currentMinute);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Current Time: ");
+      lcd.setCursor(0, 1);
+      lcd.print(currentHour);
+      lcd.print(":");
+      lcd.print(currentMinute);
+      lcd.print(":");
+      lcd.print(currentSecond);
+      delay(1000);
+    }
+    stopBuzzer();
+    digitalWrite(LED_PIN, LOW);
+    // Log scheduled and actual intake times
+    RtcDateTime scheduledTime(now.Year(), now.Month(), now.Day(), med1.nextHour,
+                              med1.nextMinute, 0);
+    RtcDateTime actualTime = Rtc.GetDateTime();
+    logSched(med1, scheduledTime, actualTime);
+    updateSchedule(med1, currentHour, currentMinute);
+    med1.dispensed = true;  // Flag that this scheduled event has been handled
+  }
+
+  // Process Med2 if active, scheduled time matches, and not yet dispensed
+  if (med2.active && currentHour == med2.nextHour &&
+      currentMinute == med2.nextMinute && !med2.dispensed) {
+    Serial.println("Dispensing Med2...");
+    beepBuzzer(2, 200);
+    digitalWrite(LED_PIN, HIGH);
+    dispensePill(2);
+    beepBuzzer(2, 200);
+    continuousBuzzer();
+    // Wait until the IR sensor detects the pill has been taken
+    while (digitalRead(IR_PIN) != LOW) {
+      delay(100);
+    }
+    stopBuzzer();
+    digitalWrite(LED_PIN, LOW);
+    RtcDateTime scheduledTime(now.Year(), now.Month(), now.Day(), med2.nextHour,
+                              med2.nextMinute, 0);
+    RtcDateTime actualTime = Rtc.GetDateTime();
+    logSched(med2, scheduledTime, actualTime);
+    updateSchedule(med2, currentHour, currentMinute);
+    med2.dispensed = true;  // Mark this event as handled
+  }
+}
+
+// NewInstance function to receive new data via Serial1 (Bluetooth/GSM) and
+// update medicine data.
 int NewInstance() {
   Serial1.println("1");
 
@@ -119,16 +277,18 @@ int NewInstance() {
     med2.lastDispensedMinute = receiveData(true).toInt();
   }
 
-  saveSched();
+  saveSched();  // Save the schedule to SD
   Serial.println("Setup Successful");
   currentState = DISPENSE;
   return 1;
 }
 
+// SD save function (unchanged from before)
 void saveSched() {
   File schedF = SD.open("USERINFO.txt", FILE_WRITE);
   if (schedF) {
     schedF.print(MedContact);
+    schedF.print(",");
     if (med1.active) {
       schedF.print(med1.name);
       schedF.print(",");
@@ -179,46 +339,38 @@ void saveSched() {
   }
 }
 
+// SD load function: loads all tokens from one line
 void loadUser() {
   File schedF = SD.open("USERINFO.txt", FILE_READ);
-
   if (!schedF) {
     Serial.println("Failed to open USERINFO.txt for reading.");
     return;
   }
-
   Serial.println("Loading user data...");
-
-  String line = schedF.readStringUntil('\n');  // Read the entire line
-  line.trim();  // Remove any trailing spaces or newline characters
-
+  String line = schedF.readStringUntil('\n');
+  line.trim();
   if (line.length() == 0) {
     Serial.println("USERINFO.txt is empty.");
     schedF.close();
     return;
   }
-
-  // Tokenize the CSV string
+  // Increase token count to 21 for all fields:
   String tokens[21];
   int index = 0;
   int lastIndex = 0;
-
   for (int i = 0; i < line.length(); i++) {
     if (line[i] == ',' || i == line.length() - 1) {
-      if (i == line.length() - 1)
-        i++;  // Include last character if no comma at end
+      if (i == line.length() - 1) i++;
       tokens[index++] = line.substring(lastIndex, i);
       lastIndex = i + 1;
     }
   }
-
-  if (index < 11) {  // Ensure at least Med1 + Med2 active flag is available
+  if (index < 11) {
     Serial.println("Corrupt or incomplete data in USERINFO.txt.");
     schedF.close();
     return;
   }
-
-  // Parse Med1
+  // Parse MedContact and Med1
   MedContact = tokens[0];
   med1.name = tokens[1];
   med1.interval = tokens[2].toInt();
@@ -227,15 +379,11 @@ void loadUser() {
   med1.baseMinute = tokens[5].toInt();
   med1.nextHour = tokens[6].toInt();
   med1.nextMinute = tokens[7].toInt();
-  med1.active = (tokens[8] == "1");  // Convert to bool
+  med1.active = (tokens[8] == "1");
   med1.lastDispensedHour = tokens[9].toInt();
   med1.lastDispensedMinute = tokens[10].toInt();
-
-  // Parse Med2 Active State
   med2.active = (tokens[11] == "1");
-
-  // If Med2 is active, parse its data
-  if (med2.active && index >= 19) {  // Ensure Med2 fields exist
+  if (med2.active && index >= 19) {
     med2.name = tokens[12];
     med2.interval = tokens[13].toInt();
     med2.iterations = tokens[14].toInt();
@@ -246,76 +394,37 @@ void loadUser() {
     med2.lastDispensedHour = tokens[19].toInt();
     med2.lastDispensedMinute = tokens[20].toInt();
   }
-
   schedF.close();
   Serial.println("User data loaded successfully.");
 }
 
+// Clear user function: saves current data to USER_LOG.txt then resets.
 void clearUser() {
-  // Open USERINFO.txt to read saved data
   File userFile = SD.open("USERINFO.txt", FILE_READ);
   if (userFile) {
     Serial.println("Saving current data to USER_LOG.txt...");
-
-    // Open USER_LOG.txt in append mode
     File logFile = SD.open("USER_LOG.txt", FILE_WRITE);
     if (logFile) {
-      String userData = userFile.readStringUntil('\n');  // Read full line
-      logFile.println(userData);  // Save data to log file
+      String userData = userFile.readStringUntil('\n');
+      logFile.println(userData);
       logFile.close();
       Serial.println("User data saved to log.");
     } else {
       Serial.println("ERROR: Failed to open USER_LOG.txt.");
     }
-
     userFile.close();
   } else {
     Serial.println("No existing user data found.");
   }
-
-  // Delete USERINFO.txt to clear saved schedule
   if (SD.exists("USERINFO.txt")) {
     SD.remove("USERINFO.txt");
     Serial.println("USERINFO.txt deleted.");
   } else {
     Serial.println("USERINFO.txt does not exist.");
   }
-
   Serial.println("Restarting Arduino...");
   delay(1000);
   asm volatile("jmp 0");  // Soft reset Arduino
-}
-
-void sendAlert(char *messageType) {
-  String message = "";
-
-  if (messageType == "M") {
-    message =
-        "ALERT: Your patient has missed their scheduled dose. Please check on "
-        "them.";
-  } else if (messageType == "1") {
-    message = "REFILL ALERT: The dispenser is low on " + med1.name +
-              ". Please refill it.";
-  } else if (messageType == "2") {
-    message = "REFILL ALERT: The dispenser is low on " + med2.name +
-              ". Please refill it.";
-  } else {
-    Serial.println("Invalid message type.");
-    return;
-  }
-
-  Serial.println("Sending SMS Alert...");
-  Serial2.println("AT+CMGF=1");  // Set SMS mode to text
-  delay(1000);
-  Serial2.print("AT+CMGS=\"");
-  Serial2.print(MedContact);
-  Serial2.println("\"");
-  delay(1000);
-  Serial2.println(message);
-  delay(500);
-  Serial2.write(26);  // Send Ctrl+Z to indicate message end
-
-  Serial.println("Alert sent successfully.");
 }
 
 void setup() {
@@ -325,9 +434,19 @@ void setup() {
   Rtc.Begin();
   Serial.begin(9600);
   Serial1.begin(9600);
-  Serial2.begin(9600);
 
-  Rtc.SetDateTime(RtcDateTime(__DATE__, __TIME__));
+  // Attach servos to designated pins.
+  servo1.attach(24);
+  servo2.attach(25);
+  servo1.write(0);
+  servo2.write(0);
+
+  // Set buzzer and LED pins as output; IR sensor pin as input.
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(IR_PIN, INPUT);
+
+  // Rtc.SetDateTime(RtcDateTime(__DATE__, __TIME__));
   lcd.setCursor(0, 1);
   lcd.print("RTC OK");
   lcd.setCursor(0, 0);
@@ -340,18 +459,17 @@ void setup() {
     while (true) {
       lcd.setCursor(10, 1);
       lcd.print("SD FAIL");
-    };
+    }
   }
   lcd.setCursor(10, 1);
   lcd.print("SD OK");
   Serial.println("SD card is ready to use.");
   delay(2000);
 
-  // **Check if USERINFO.txt exists**
+  // Check if USERINFO.txt exists and load user data if it does.
   if (SD.exists("USERINFO.txt")) {
     Serial.println("USERINFO.txt found. Loading user data...");
-    loadUser();  // Load saved schedule from SD card
-
+    loadUser();
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("User Data Loaded");
@@ -359,16 +477,13 @@ void setup() {
     currentState = DISPENSE;
   } else {
     Serial.println("No saved data found. Proceeding to setup...");
-
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("   PillOtter");
     lcd.setCursor(0, 1);
     lcd.print("Connect 2 setup");
-
     currentState = SETUP;
   }
-
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("   PillOtter");
@@ -379,14 +494,11 @@ void setup() {
 void loop() {
   switch (currentState) {
     case SETUP:
-      Serial.println("State: SETUP");
-
+      // Existing SETUP code for handling new instance commands...
       if (Serial1.available()) {
         String receivedData = Serial1.readStringUntil('\n');
         receivedData.trim();
-        Serial.println("RECEIVED: ");
-        Serial.println(receivedData);
-
+        Serial.println("RECEIVED: " + receivedData);
         if (receivedData == "check") {
           Serial1.println("1");
         } else if (receivedData == "NewInstance") {
@@ -400,8 +512,28 @@ void loop() {
       break;
 
     case DISPENSE:
-      // Serial.println("State: DISPENSE");
-      // Serial.println("What data do you need?");
+      // Check the RTC and schedule every 10 seconds.
+      RtcDateTime now = Rtc.GetDateTime();
+      int currentHour = now.Hour();
+      int currentMinute = now.Minute();
+      int currentSecond = now.Second();
+      Serial.print("Current time: ");
+      Serial.print(currentHour);
+      Serial.print(":");
+      Serial.println(currentMinute);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Current Time: ");
+      lcd.setCursor(0, 1);
+      lcd.print(currentHour);
+      lcd.print(":");
+      lcd.print(currentMinute);
+      lcd.print(":");
+      lcd.print(currentSecond);
+
+      checkAndDispense();
+      delay(1000);
+      // Optionally, process USB Serial commands for testing.
       if (Serial.available()) {
         String input = Serial.readStringUntil('\n');
         input.trim();
@@ -426,14 +558,31 @@ void loop() {
           Serial.print(",");
           Serial.print(med1.lastDispensedMinute);
           Serial.print(",");
-          Serial.print(med2.active);
+          Serial.println(med2.active);
         } else if (input == "med2") {
-          Serial.println(med2.name);
+          Serial.print(med2.name);
+          Serial.print(",");
+          Serial.print(med2.interval);
+          Serial.print(",");
+          Serial.print(med1.iterations);
+          Serial.print(",");
+          Serial.print(med1.baseHour);
+          Serial.print(",");
+          Serial.print(med2.baseMinute);
+          Serial.print(",");
+          Serial.print(med2.nextHour);
+          Serial.print(",");
+          Serial.print(med2.nextMinute);
+          Serial.print(",");
+          Serial.print(med2.active);
+          Serial.print(",");
+          Serial.print(med2.lastDispensedHour);
+          Serial.print(",");
+          Serial.print(med2.lastDispensedMinute);
         } else if (input == "clear") {
           clearUser();
         }
       }
-
       break;
   }
 }
