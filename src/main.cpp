@@ -6,6 +6,7 @@
 #include <SoftwareSerial.h>
 #include <ThreeWire.h>
 #include <Wire.h>
+#include <avr/wdt.h>
 
 // ! OBJECTS DEFINITIONS
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -47,6 +48,14 @@ Medicine med1, med2;
 String MedContact = "+639915176440";  // For GSM alerts
 
 // ! FUNCTIONS
+
+void resetFunc() {
+  Serial.println("Resetting Arduino...");
+  wdt_enable(WDTO_15MS);  // Enable the watchdog timer with a 15ms timeout
+  while (1);              // Wait for the reset
+  lcd.clear();
+  lcd.print("Resetting...");
+}
 
 // Receive data from Serial1 (Bluetooth/GSM) with optional integer expectation.
 // This function returns a String (even when expecting a number, which you then
@@ -260,14 +269,7 @@ void updateSchedule(Medicine &med, int actualHour, int actualMinute) {
   Serial.println(med.nextMinute);
 
   saveSched();  // Save updated schedule to SD
-}
-
-void simulateTime(RtcDateTime &now, int minutesToAdd) {
-  int totalMinutes = now.Hour() * 60 + now.Minute() + minutesToAdd;
-  int newHour = (totalMinutes / 60) % 24;
-  int newMinute = totalMinutes % 60;
-  now = RtcDateTime(now.Year(), now.Month(), now.Day(), newHour, newMinute,
-                    now.Second());
+  // resetFunc();
 }
 
 void resetDailyDoses() {
@@ -286,10 +288,13 @@ void checkAndDispense() {
   int currentHour = now.Hour();
   int currentMinute = now.Minute();
 
-  // Reset dispensed flag if the next scheduled time is reached
   if (med1.active && currentHour == med1.nextHour &&
       currentMinute == med1.nextMinute) {
-    med1.dispensed = false;
+    med1.dispensed = false;  // Reset the flag for the next schedule
+  }
+  if (med2.active && currentHour == med2.nextHour &&
+      currentMinute == med2.nextMinute) {
+    med2.dispensed = false;  // Reset the flag for the next schedule
   }
 
   // Process Med1 if active, scheduled time matches, and not yet dispensed
@@ -306,34 +311,50 @@ void checkAndDispense() {
     Serial.println("BUZZZ CONTINUOS");
     // Keep buzzing until IR sensor indicates pill taken (IR sensor reads LOW)
     // Wait for the IR sensor to detect that the pill has been taken
-    while (digitalRead(IR_PIN) != LOW) {  // Wait for LOW (pill detected)
-      RtcDateTime now = Rtc.GetDateTime();
-      int currentHour = now.Hour();
-      int currentMinute = now.Minute();
-      int currentSecond = now.Second();
-      Serial.print("Current time: ");
-      Serial.print(currentHour);
-      Serial.print(":");
-      Serial.println(currentMinute);
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Current Time: ");
-      lcd.setCursor(0, 1);
-      lcd.print(currentHour);
-      lcd.print(":");
-      lcd.print(currentMinute);
-      lcd.print(":");
-      lcd.print(currentSecond);
-      delay(1000);
+    unsigned long previousMillis =
+        0;  // Stores the last time the IR sensor was checked
+    const long interval =
+        500;  // Interval for checking the IR sensor (1 second)
+    bool texted = false;
 
-      // Send alert if the pill is not taken within the specified time
-      int currentTime = millis();
-      int interval = 18000;  // 18 seconds (for testing)
-      bool texted = false;
-      if (currentTime >= interval && !texted) {
-        sendAlert("Ayaw uminom ni patient maamsir");
-        texted = true;
+    while (digitalRead(IR_PIN) != LOW) {  // Wait for LOW (pill detected)
+      unsigned long currentMillis = millis();
+
+      // Check the IR sensor and update the display every second
+      if (currentMillis - previousMillis >= interval) {
+        previousMillis =
+            currentMillis;  // Save the last time you checked the IR sensor
+
+        RtcDateTime now = Rtc.GetDateTime();
+        int currentHour = now.Hour();
+        int currentMinute = now.Minute();
+        int currentSecond = now.Second();
+        Serial.print("Current time: ");
+        Serial.print(currentHour);
+        Serial.print(":");
+        Serial.println(currentMinute);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Current Time: ");
+        lcd.setCursor(0, 1);
+        lcd.print(currentHour);
+        lcd.print(":");
+        lcd.print(currentMinute);
+        lcd.print(":");
+        lcd.print(currentSecond);
+
+        // Send alert if the pill is not taken within the specified time
+        static unsigned long alertStartTime =
+            currentMillis;  // Track when the alert timer started
+        if (currentMillis - alertStartTime >= 10000 &&
+            !texted) {  // 18 seconds (for testing)
+          sendAlert("Ayaw uminom ni patient maamsir");
+          texted = true;
+        }
       }
+
+      // Add a small delay to avoid overwhelming the loop
+      delay(10);
     }
 
     // Pill has been taken (IR sensor reads HIGH)
@@ -353,70 +374,6 @@ void checkAndDispense() {
     logSched(med1, scheduledTime, actualTime);
     updateSchedule(med1, currentHour, currentMinute);
     med1.dispensed = true;
-  }
-
-  // Process Med2 if active, scheduled time matches, and not yet dispensed
-  if (med2.active && currentHour == med2.nextHour &&
-      currentMinute == med2.nextMinute && !med2.dispensed) {
-    Serial.println("Dispensing Med2...");
-    beepBuzzer(2, 200);
-    digitalWrite(LED_PIN, HIGH);
-    Serial.println("LED LIGHT UP");
-    dispensePill(2);
-    Serial.println("Servo Droppp");
-    beepBuzzer(2, 200);
-    continuousBuzzer();
-    Serial.println("Continuous Buzzer");
-    // Wait until the IR sensor detects the pill has been taken
-    // Wait for the IR sensor to detect that the pill has been taken
-    while (digitalRead(IR_PIN) != LOW) {  // Wait for LOW (pill detected)
-      RtcDateTime now = Rtc.GetDateTime();
-      int currentHour = now.Hour();
-      int currentMinute = now.Minute();
-      int currentSecond = now.Second();
-      Serial.print("Current time: ");
-      Serial.print(currentHour);
-      Serial.print(":");
-      Serial.println(currentMinute);
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Current Time: ");
-      lcd.setCursor(0, 1);
-      lcd.print(currentHour);
-      lcd.print(":");
-      lcd.print(currentMinute);
-      lcd.print(":");
-      lcd.print(currentSecond);
-      delay(1000);
-
-      // Send alert if the pill is not taken within the specified time
-      int currentTime = millis();
-      int interval = 18000;  // 18 seconds (for testing)
-      bool texted = false;
-      if (currentTime >= interval && !texted) {
-        sendAlert("Ayaw uminom ni patient maamsir");
-        texted = true;
-      }
-    }
-
-    // Pill has been taken (IR sensor reads HIGH)
-    stopBuzzer();
-    digitalWrite(LED_PIN, LOW);
-    Serial.println("LED LOWWW");
-    sendAlert("Nakainom na si patient mo beh!");
-    stopBuzzer();
-    digitalWrite(LED_PIN, LOW);
-    Serial.println("LED LOWWW");
-    sendAlert("Nakainom na si patient mo beh!");
-
-    RtcDateTime scheduledTime(now.Year(), now.Month(), now.Day(), med2.nextHour,
-                              med2.nextMinute, 0);
-    RtcDateTime actualTime = Rtc.GetDateTime();
-    logSched(med2, scheduledTime, actualTime);
-    Serial.println("LOGGEDDDDD SCHED2");
-    updateSchedule(med2, currentHour, currentMinute);
-    Serial.println("SCHEDD UPFDTAEDDD");
-    med2.dispensed = true;  // Mark this event as handled
   }
 }
 
