@@ -18,9 +18,11 @@ Servo servo2;  // for med2
 
 // Define additional hardware pins
 #define CSpin 53       // SD card chip select
-#define IR_PIN 22      // IR sensor input pin (reads LOW when pill is taken)
+#define IR_PIN 4       // IR sensor input pin (reads LOW when pill is taken)
 #define BUZZER_PIN A7  // Buzzer output pin
-#define LED_PIN A8
+#define LED_PIN 3
+#define servo1pin 32
+#define servo2pin 38
 
 // ! VARIABLES, DEFINITIONS AND STRUCTURES
 enum State { SETUP = 0, DISPENSE = 1 };
@@ -28,7 +30,7 @@ State currentState = SETUP;
 
 struct Medicine {
   String name;
-  int interval;    // in hours
+  int interval;    // in minutes (from hours)
   int iterations;  // doses per day (not used in this snippet)
   int baseHour;    // scheduled base hour (from app)
   int baseMinute;  // scheduled base minute
@@ -38,6 +40,7 @@ struct Medicine {
   int lastDispensedHour;
   int lastDispensedMinute;
   bool dispensed;  // flag to indicate if the medicine has been dispensed
+  int dosesTaken;  // doses taken today
 };
 
 Medicine med1, med2;
@@ -117,21 +120,163 @@ void dispensePill(int compartment) {
 
 // ! Update Schedule: Adds the interval (in hours) to the actual dispensing
 // time.
+// Updated saveSched() function: removes the old file and rewrites new schedule
+void saveSched() {
+  // Remove the old schedule file if it exists.
+  if (SD.exists("USERINFO.txt")) {
+    SD.remove("USERINFO.txt");
+  }
+
+  File schedF = SD.open("USERINFO.txt", FILE_WRITE);
+  if (schedF) {
+    schedF.print(MedContact);
+    schedF.print(",");
+    if (med1.active) {
+      schedF.print(med1.name);
+      schedF.print(",");
+      schedF.print(med1.interval);
+      schedF.print(",");
+      schedF.print(med1.iterations);
+      schedF.print(",");
+      schedF.print(med1.baseHour);
+      schedF.print(",");
+      schedF.print(med1.baseMinute);
+      schedF.print(",");
+      schedF.print(med1.nextHour);
+      schedF.print(",");
+      schedF.print(med1.nextMinute);
+      schedF.print(",");
+      schedF.print(med1.active);
+      schedF.print(",");
+      schedF.print(med1.lastDispensedHour);
+      schedF.print(",");
+      schedF.print(med1.lastDispensedMinute);
+      schedF.print(",");
+      schedF.print(med2.active);
+    }
+
+    if (med2.active) {
+      schedF.print(",");
+      schedF.print(med2.name);
+      schedF.print(",");
+      schedF.print(med2.interval);
+      schedF.print(",");
+      schedF.print(med2.iterations);
+      schedF.print(",");
+      schedF.print(med2.baseHour);
+      schedF.print(",");
+      schedF.print(med2.baseMinute);
+      schedF.print(",");
+      schedF.print(med2.nextHour);
+      schedF.print(",");
+      schedF.print(med2.nextMinute);
+      schedF.print(",");
+      schedF.print(med2.lastDispensedHour);
+      schedF.print(",");
+      schedF.print(med2.lastDispensedMinute);
+    }
+    schedF.println();
+    schedF.close();
+    Serial.println("Schedule saved to SD.");
+  } else {
+    Serial.println("Failed to open USERINFO.txt for writing.");
+  }
+}
+
+// Updated updateSchedule() function: updates the Medicine struct and then
+// rewrites USERINFO.txt
+// void updateSchedule(Medicine &med, int actualHour, int actualMinute) {
+//   Serial.println("Updating schedule...");
+
+//   int actualMins = actualHour * 60 + actualMinute;
+//   int intervalMins = med.interval * 60;
+
+//   // Increase the count of doses taken today
+//   med.dosesTaken++;
+
+//   // Check if we need another dose today
+//   if (med.dosesTaken < med.iterations) {
+//     // Schedule next dose today
+//     int newTime = actualMins + intervalMins;
+//     med.nextHour = (newTime / 60) % 24;
+//     med.nextMinute = newTime % 60;
+//   } else {
+//     // Reset for the next day
+//     med.dosesTaken = 0;
+//     med.nextHour = med.baseHour;
+//     med.nextMinute = med.baseMinute;
+//   }
+
+//   // Update last dispensed time
+//   med.lastDispensedHour = actualHour;
+//   med.lastDispensedMinute = actualMinute;
+//   med.dispensed = false;  // Ready for next cycle
+
+//   // Debugging Output
+//   Serial.print("Next dose for ");
+//   Serial.print(med.name);
+//   Serial.print(" at ");
+//   Serial.print(med.nextHour);
+//   Serial.print(":");
+//   Serial.println(med.nextMinute);
+
+//   saveSched();  // Save updated schedule to SD
+// }
+
 void updateSchedule(Medicine &med, int actualHour, int actualMinute) {
-  int actualMins = actualHour * 60 + actualMinute;
-  int intervalMins = med.interval * 60;
-  int newTime = actualMins + intervalMins;
-  med.nextHour = (newTime / 60) % 24;
-  med.nextMinute = newTime % 60;
+  Serial.println("Updating schedule...");
+
+  int actualMins =
+      actualHour * 60 + actualMinute;  // Convert current time to minutes
+  int intervalMins = med.interval;     // Interval is already in minutes
+
+  // Increase the count of doses taken today
+  med.dosesTaken++;
+
+  // Check if we need another dose today
+  if (med.dosesTaken < med.iterations) {
+    // Schedule next dose today
+    int newTime = actualMins + intervalMins;  // Add interval to current time
+    med.nextHour = (newTime / 60) % 24;       // Convert back to hours
+    med.nextMinute = newTime % 60;            // Convert back to minutes
+  } else {
+    // Reset for the next day
+    med.dosesTaken = 0;
+    med.nextHour = med.baseHour;
+    med.nextMinute = med.baseMinute;
+  }
+
+  // Update last dispensed time
   med.lastDispensedHour = actualHour;
   med.lastDispensedMinute = actualMinute;
-  med.dispensed = false;  // Reset flag for the new scheduled event
-  Serial.print("New schedule for ");
+  med.dispensed = false;  // Ready for next cycle
+
+  // Debugging Output
+  Serial.print("Next dose for ");
   Serial.print(med.name);
-  Serial.print(": ");
+  Serial.print(" at ");
   Serial.print(med.nextHour);
   Serial.print(":");
   Serial.println(med.nextMinute);
+
+  saveSched();  // Save updated schedule to SD
+}
+
+void simulateTime(RtcDateTime &now, int minutesToAdd) {
+  int totalMinutes = now.Hour() * 60 + now.Minute() + minutesToAdd;
+  int newHour = (totalMinutes / 60) % 24;
+  int newMinute = totalMinutes % 60;
+  now = RtcDateTime(now.Year(), now.Month(), now.Day(), newHour, newMinute,
+                    now.Second());
+}
+
+void resetDailyDoses() {
+  RtcDateTime now = Rtc.GetDateTime();
+  if (now.Hour() == 0 && now.Minute() == 0) {  // Midnight Reset
+    med1.dosesTaken = 0;
+    med2.dosesTaken = 0;
+    Serial.println("Daily doses reset!");
+  }
 }
 
 // ! Check and Dispense: Called every 10 seconds in DISPENSE state.
@@ -141,17 +286,27 @@ void checkAndDispense() {
   int currentHour = now.Hour();
   int currentMinute = now.Minute();
 
+  // Reset dispensed flag if the next scheduled time is reached
+  if (med1.active && currentHour == med1.nextHour &&
+      currentMinute == med1.nextMinute) {
+    med1.dispensed = false;
+  }
+
   // Process Med1 if active, scheduled time matches, and not yet dispensed
   if (med1.active && currentHour == med1.nextHour &&
       currentMinute == med1.nextMinute && !med1.dispensed) {
     Serial.println("Dispensing Med1...");
     beepBuzzer(2, 200);
     digitalWrite(LED_PIN, HIGH);
+    Serial.println("LED HIGHHH");
     dispensePill(1);
+    Serial.println("servo doneee");
     beepBuzzer(2, 200);
     continuousBuzzer();
+    Serial.println("BUZZZ CONTINUOS");
     // Keep buzzing until IR sensor indicates pill taken (IR sensor reads LOW)
-    while (digitalRead(IR_PIN) != LOW) {
+    // Wait for the IR sensor to detect that the pill has been taken
+    while (digitalRead(IR_PIN) != LOW) {  // Wait for LOW (pill detected)
       RtcDateTime now = Rtc.GetDateTime();
       int currentHour = now.Hour();
       int currentMinute = now.Minute();
@@ -170,16 +325,34 @@ void checkAndDispense() {
       lcd.print(":");
       lcd.print(currentSecond);
       delay(1000);
+
+      // Send alert if the pill is not taken within the specified time
+      int currentTime = millis();
+      int interval = 18000;  // 18 seconds (for testing)
+      bool texted = false;
+      if (currentTime >= interval && !texted) {
+        sendAlert("Ayaw uminom ni patient maamsir");
+        texted = true;
+      }
     }
+
+    // Pill has been taken (IR sensor reads HIGH)
     stopBuzzer();
     digitalWrite(LED_PIN, LOW);
+    Serial.println("LED LOWWW");
+    sendAlert("Nakainom na si patient mo beh!");
+    stopBuzzer();
+    digitalWrite(LED_PIN, LOW);
+    Serial.println("LED LOWWW");
+    sendAlert("Nakainom na si patient mo beh!");
+
     // Log scheduled and actual intake times
     RtcDateTime scheduledTime(now.Year(), now.Month(), now.Day(), med1.nextHour,
                               med1.nextMinute, 0);
     RtcDateTime actualTime = Rtc.GetDateTime();
     logSched(med1, scheduledTime, actualTime);
     updateSchedule(med1, currentHour, currentMinute);
-    med1.dispensed = true;  // Flag that this scheduled event has been handled
+    med1.dispensed = true;
   }
 
   // Process Med2 if active, scheduled time matches, and not yet dispensed
@@ -188,20 +361,61 @@ void checkAndDispense() {
     Serial.println("Dispensing Med2...");
     beepBuzzer(2, 200);
     digitalWrite(LED_PIN, HIGH);
+    Serial.println("LED LIGHT UP");
     dispensePill(2);
+    Serial.println("Servo Droppp");
     beepBuzzer(2, 200);
     continuousBuzzer();
+    Serial.println("Continuous Buzzer");
     // Wait until the IR sensor detects the pill has been taken
-    while (digitalRead(IR_PIN) != LOW) {
-      delay(100);
+    // Wait for the IR sensor to detect that the pill has been taken
+    while (digitalRead(IR_PIN) != LOW) {  // Wait for LOW (pill detected)
+      RtcDateTime now = Rtc.GetDateTime();
+      int currentHour = now.Hour();
+      int currentMinute = now.Minute();
+      int currentSecond = now.Second();
+      Serial.print("Current time: ");
+      Serial.print(currentHour);
+      Serial.print(":");
+      Serial.println(currentMinute);
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Current Time: ");
+      lcd.setCursor(0, 1);
+      lcd.print(currentHour);
+      lcd.print(":");
+      lcd.print(currentMinute);
+      lcd.print(":");
+      lcd.print(currentSecond);
+      delay(1000);
+
+      // Send alert if the pill is not taken within the specified time
+      int currentTime = millis();
+      int interval = 18000;  // 18 seconds (for testing)
+      bool texted = false;
+      if (currentTime >= interval && !texted) {
+        sendAlert("Ayaw uminom ni patient maamsir");
+        texted = true;
+      }
     }
+
+    // Pill has been taken (IR sensor reads HIGH)
     stopBuzzer();
     digitalWrite(LED_PIN, LOW);
+    Serial.println("LED LOWWW");
+    sendAlert("Nakainom na si patient mo beh!");
+    stopBuzzer();
+    digitalWrite(LED_PIN, LOW);
+    Serial.println("LED LOWWW");
+    sendAlert("Nakainom na si patient mo beh!");
+
     RtcDateTime scheduledTime(now.Year(), now.Month(), now.Day(), med2.nextHour,
                               med2.nextMinute, 0);
     RtcDateTime actualTime = Rtc.GetDateTime();
     logSched(med2, scheduledTime, actualTime);
+    Serial.println("LOGGEDDDDD SCHED2");
     updateSchedule(med2, currentHour, currentMinute);
+    Serial.println("SCHEDD UPFDTAEDDD");
     med2.dispensed = true;  // Mark this event as handled
   }
 }
@@ -281,62 +495,6 @@ int NewInstance() {
   Serial.println("Setup Successful");
   currentState = DISPENSE;
   return 1;
-}
-
-// SD save function (unchanged from before)
-void saveSched() {
-  File schedF = SD.open("USERINFO.txt", FILE_WRITE);
-  if (schedF) {
-    schedF.print(MedContact);
-    schedF.print(",");
-    if (med1.active) {
-      schedF.print(med1.name);
-      schedF.print(",");
-      schedF.print(med1.interval);
-      schedF.print(",");
-      schedF.print(med1.iterations);
-      schedF.print(",");
-      schedF.print(med1.baseHour);
-      schedF.print(",");
-      schedF.print(med1.baseMinute);
-      schedF.print(",");
-      schedF.print(med1.nextHour);
-      schedF.print(",");
-      schedF.print(med1.nextMinute);
-      schedF.print(",");
-      schedF.print(med1.active);
-      schedF.print(",");
-      schedF.print(med1.lastDispensedHour);
-      schedF.print(",");
-      schedF.print(med1.lastDispensedMinute);
-      schedF.print(",");
-      schedF.print(med2.active);
-    }
-
-    if (med2.active) {
-      schedF.print(",");
-      schedF.print(med2.name);
-      schedF.print(",");
-      schedF.print(med2.interval);
-      schedF.print(",");
-      schedF.print(med2.iterations);
-      schedF.print(",");
-      schedF.print(med2.baseHour);
-      schedF.print(",");
-      schedF.print(med2.baseMinute);
-      schedF.print(",");
-      schedF.print(med2.nextHour);
-      schedF.print(",");
-      schedF.print(med2.nextMinute);
-      schedF.print(",");
-      schedF.print(med2.lastDispensedHour);
-      schedF.print(",");
-      schedF.print(med2.lastDispensedMinute);
-    }
-    schedF.println();
-    schedF.close();
-    Serial.println("Schedule saved to SD.");
-  }
 }
 
 // SD load function: loads all tokens from one line
@@ -427,6 +585,27 @@ void clearUser() {
   asm volatile("jmp 0");  // Soft reset Arduino
 }
 
+void sendAlert(String msg) {
+  // Set GSM module to text mode
+  Serial2.println("AT+CMGF=1");
+  delay(1000);
+
+  // Specify the recipient's phone number
+  Serial2.print("AT+CMGS=\"");
+  Serial2.print(MedContact);
+  Serial2.println("\"");
+  delay(1000);
+
+  // Send the message content
+  Serial2.println(msg);
+  delay(100);
+
+  // Send Ctrl+Z to indicate end of message
+  Serial2.write(26);
+  delay(5000);  // Wait for the message to be sent
+  Serial.println("GSM message sent: " + msg);
+}
+
 void setup() {
   Wire.begin();
   lcd.init();
@@ -434,10 +613,11 @@ void setup() {
   Rtc.Begin();
   Serial.begin(9600);
   Serial1.begin(9600);
+  Serial2.begin(9600);
 
   // Attach servos to designated pins.
-  servo1.attach(24);
-  servo2.attach(25);
+  servo1.attach(servo1pin);
+  servo2.attach(servo2pin);
   servo1.write(0);
   servo2.write(0);
 
@@ -512,6 +692,7 @@ void loop() {
       break;
 
     case DISPENSE:
+      resetDailyDoses();
       // Check the RTC and schedule every 10 seconds.
       RtcDateTime now = Rtc.GetDateTime();
       int currentHour = now.Hour();
